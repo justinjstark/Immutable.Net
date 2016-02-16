@@ -20,10 +20,18 @@ namespace ImmutableNet
         /// </summary>
         private T self;
 
+        private readonly IDelegateCache<T> _delegateCache;
+
         /// <summary>
-        /// A cached delegate that calls a parameterless constructor.
+        /// Creates a new Immutable builder with the supplied enclosed type instance.
         /// </summary>
-        private static Func<T> creationDelegate;
+        /// <param name="self">The instance of the enclosed type to use.</param>
+        /// <param name="delegateCache"></param>
+        /// <returns>A new ImmutableBuilder instance.</returns>
+        public static ImmutableBuilder<T> Create(T self, IDelegateCache<T> delegateCache)
+        {
+            return new ImmutableBuilder<T>(self, delegateCache);
+        }
 
         /// <summary>
         /// Creates a new Immutable builder with the supplied enclosed type instance.
@@ -32,20 +40,29 @@ namespace ImmutableNet
         /// <returns>A new ImmutableBuilder instance.</returns>
         public static ImmutableBuilder<T> Create(T self)
         {
-            return new ImmutableBuilder<T>(self);
+            return new ImmutableBuilder<T>(self, DelegateCache<T>.Instance);
         }
 
         /// <summary>
         /// Creates an instance of an ImmutableBuilder.
         /// </summary>
-        public ImmutableBuilder() 
+        public ImmutableBuilder() : this(DelegateCache<T>.Instance)
         {
-            if (creationDelegate == null)
+        }
+
+        /// <summary>
+        /// Creates an instance of an ImmutableBuilder.
+        /// </summary>
+        public ImmutableBuilder(IDelegateCache<T> delegateCache)
+        {
+            _delegateCache = delegateCache;
+
+            if (_delegateCache.CreationDelegate == null)
             {
-                creationDelegate = DelegateBuilder.BuildCreationDelegate<T>();
+                _delegateCache.CreationDelegate = DelegateBuilder.BuildCreationDelegate<T>();
             }
 
-            self = creationDelegate.Invoke();
+            self = _delegateCache.CreationDelegate.Invoke();
         }
 
         /// <summary>
@@ -53,8 +70,11 @@ namespace ImmutableNet
         /// from a reference to the enclosed type.
         /// </summary>
         /// <param name="self">The instance of the enclosed type to use.</param>
-        private ImmutableBuilder(T self)
+        /// <param name="delegateCache"></param>
+        private ImmutableBuilder(T self, IDelegateCache<T> delegateCache)
         {
+            _delegateCache = delegateCache;
+
             this.self = self;
         }
 

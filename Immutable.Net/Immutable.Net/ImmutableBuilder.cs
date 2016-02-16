@@ -20,5 +20,10 @@ namespace ImmutableNet
         {
             return ImmutableBuilder<T>.Create(self);
         }
+
+        public static ImmutableBuilder<T> Create<T>(T self, IDelegateCache<T> delegateCache) where T : class
+        {
+            return ImmutableBuilder<T>.Create(self, delegateCache);
+        }
     }
 }

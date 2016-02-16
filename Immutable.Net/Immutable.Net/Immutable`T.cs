@@ -1,11 +1,9 @@
 ﻿using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
-using System.Text;
 using System.Xml.Serialization;
 
 namespace ImmutableNet
@@ -24,52 +22,25 @@ namespace ImmutableNet
         [XmlElement(Order=1)]
         private T self;
 
-        /// <summary>
-        /// An internal caching class that holds a cache of immutable accessor delegates.
-        /// </summary>
-        /// <typeparam name="TOutput">The immutable type for this cache.</typeparam>
-        /// <typeparam name="TValue">The property type for this accessor.</typeparam>
-        private static class Accessor<TValue>
-        {
-            /// <summary>
-            /// Holds a dictionary of possible delegates for caching. Because a given
-            /// immutable type may have multiple properties of the same type, the delegates
-            /// must be differentiated here by MemberInfo.
-            /// </summary>
-            public static readonly ConcurrentDictionary<MemberInfo, Func<T, TValue, T>> AccessorDelegates = new ConcurrentDictionary<MemberInfo, Func<T, TValue, T>>();
-        }
-
-        /// <summary>
-        /// A cached delegate that clones the enclosed type.
-        /// </summary>
-        private static Func<T, T> cloneDelegate;
-
-        /// <summary>
-        /// A cached delegate that calls a parameterless constructor.
-        /// </summary>
-        private static Func<T> creationDelegate;
-
-        /// <summary>
-        /// A cached delegate that serializes the enclosed type.
-        /// </summary>
-        private static Func<T, SerializationInfo, T> serializationDelegate;
-
-        /// <summary>
-        /// A cached delegate that deserializes the enclosed type.
-        /// </summary>
-        private static Func<T, SerializationInfo, T> deserializationDelegate;
+        private readonly IDelegateCache<T> _delegateCache;
 
         /// <summary>
         /// Creates an instance of an Immutable.
         /// </summary>
-        public Immutable() 
+        public Immutable() : this(DelegateCache<T>.Instance)
         {
-            if (creationDelegate == null)
+        }
+
+        public Immutable(IDelegateCache<T> delegateCache)
+        {
+            _delegateCache = delegateCache;
+
+            if (_delegateCache.CreationDelegate == null)
             {
-                creationDelegate = DelegateBuilder.BuildCreationDelegate<T>();
+                _delegateCache.CreationDelegate = DelegateBuilder.BuildCreationDelegate<T>();
             }
 
-            self = creationDelegate.Invoke();
+            self = _delegateCache.CreationDelegate.Invoke();
         }
 
         /// <summary>
@@ -77,8 +48,20 @@ namespace ImmutableNet
         /// from a reference to the enclosed type.
         /// </summary>
         /// <param name="self">The instance of the enclosed type to use.</param>
-        private Immutable(T self)
+        private Immutable(T self) : this(self, DelegateCache<T>.Instance)
         {
+        }
+
+        /// <summary>
+        /// A private constructor that allows a new Immutable to be built
+        /// from a reference to the enclosed type.
+        /// </summary>
+        /// <param name="self">The instance of the enclosed type to use.</param>
+        /// <param name="delegateCache"></param>
+        private Immutable(T self, IDelegateCache<T> delegateCache)
+        {
+            _delegateCache = delegateCache;
+
             this.self = self;
         }
 
@@ -89,19 +72,21 @@ namespace ImmutableNet
         /// <param name="context">The serialization streaming context.</param>
         private Immutable(SerializationInfo info, StreamingContext context)
         {
-            if(creationDelegate == null)
+            _delegateCache = DelegateCache<T>.Instance;
+
+            if(_delegateCache.CreationDelegate == null)
             {
-                creationDelegate = DelegateBuilder.BuildCreationDelegate<T>();
+                _delegateCache.CreationDelegate = DelegateBuilder.BuildCreationDelegate<T>();
             }
 
-            self = creationDelegate.Invoke();
+            self = _delegateCache.CreationDelegate.Invoke();
 
-            if(deserializationDelegate == null)
+            if(_delegateCache.DeserializationDelegate == null)
             {
-                deserializationDelegate = DelegateBuilder.BuildDeserializationDelegate<T>();
+                _delegateCache.DeserializationDelegate = DelegateBuilder.BuildDeserializationDelegate<T>();
             }
 
-            self = deserializationDelegate(self, info);
+            self = _delegateCache.DeserializationDelegate(self, info);
         }
 
         /// <summary>
@@ -111,12 +96,17 @@ namespace ImmutableNet
         /// <returns>A new Immutable with a cloned enclosed instance.</returns>
         public static Immutable<T> Create(T self)
         {
-            if (cloneDelegate == null)
+            return Create(self, DelegateCache<T>.Instance);
+        }
+
+        public static Immutable<T> Create(T self, IDelegateCache<T> delegateCache)
+        {
+            if (delegateCache.CloneDelegate == null)
             {
-                cloneDelegate = DelegateBuilder.BuildCloner<T>();
+                delegateCache.CloneDelegate = DelegateBuilder.BuildCloner<T>();
             }
 
-            return new Immutable<T>(cloneDelegate(self));
+            return new Immutable<T>(delegateCache.CloneDelegate(self), delegateCache);
         }
 
         /// <summary>
@@ -142,17 +132,16 @@ namespace ImmutableNet
             {
                 throw new ArgumentException("Can only assign to a class member.");
             }
-            else
-            {
-                Func<T, TValue, T> accessor;
-                if(!Accessor<TValue>.AccessorDelegates.TryGetValue(assignTo.Member, out accessor))
-                {
-                    accessor = DelegateBuilder.BuildAccessorDelegate(assignment);
-                    Accessor<TValue>.AccessorDelegates.AddOrUpdate(assignTo.Member, accessor, (key, item) => accessor);
-                }
 
-                return new Immutable<T>(accessor(Clone(), value));
+            var accessor = _delegateCache.GetAccessorDelegate<TValue>(assignTo.Member);
+
+            if (accessor == null)
+            {
+                accessor = DelegateBuilder.BuildAccessorDelegate(assignment);
+                _delegateCache.CacheAccessorDelegate(assignTo.Member, accessor);
             }
+
+            return new Immutable<T>(accessor(Clone(), value), _delegateCache);
         }
 
         /// <summary>
@@ -161,12 +150,12 @@ namespace ImmutableNet
         /// <returns>A copy of the enclosed type.</returns>
         private T Clone()
         {
-            if(cloneDelegate == null)
+            if(_delegateCache.CloneDelegate == null)
             {
-                cloneDelegate = DelegateBuilder.BuildCloner<T>();
+                _delegateCache.CloneDelegate = DelegateBuilder.BuildCloner<T>();
             }
 
-            return cloneDelegate(self);
+            return _delegateCache.CloneDelegate(self);
         }
 
         /// <summary>
@@ -186,7 +175,7 @@ namespace ImmutableNet
         /// <returns>A builder instance.</returns>
         public ImmutableBuilder<T> ToBuilder()
         {
-            return ImmutableBuilder<T>.Create(Clone());
+            return ImmutableBuilder<T>.Create(Clone(), _delegateCache);
         }
 
         /// <summary>
@@ -196,12 +185,12 @@ namespace ImmutableNet
         /// <param name="context">The serialization streaming context.</param>
         public void GetObjectData(SerializationInfo info, StreamingContext context)
         {
-            if(serializationDelegate == null)
+            if(_delegateCache.SerializationDelegate == null)
             {
-                serializationDelegate = DelegateBuilder.BuildSerializationDelegate<T>();
+                _delegateCache.SerializationDelegate = DelegateBuilder.BuildSerializationDelegate<T>();
             }
 
-            serializationDelegate(self, info);
+            _delegateCache.SerializationDelegate(self, info);
         }
     }
 }
